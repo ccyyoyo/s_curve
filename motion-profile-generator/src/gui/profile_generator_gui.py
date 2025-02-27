@@ -54,8 +54,16 @@ class ProfileGeneratorGUI:
         # 設置 matplotlib 支援中文字體
         plt.rcParams['font.family'] = ['Microsoft JhengHei', 'Arial']
         
-        # Initialize plot
-        self.fig, self.axs = plt.subplots(4, 1, figsize=(10, 8))
+        # Initialize plot with adjusted height and spacing
+        self.fig, self.axs = plt.subplots(4, 1, figsize=(10, 10))
+        
+        # Adjust the spacing between subplots
+        self.fig.subplots_adjust(
+            top=0.95,      # 頂部邊距
+            bottom=0.05,   # 底部邊距
+            hspace=0.35    # 子圖之間的垂直間距
+        )
+        
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
         self.canvas.get_tk_widget().pack()
         
@@ -71,6 +79,15 @@ class ProfileGeneratorGUI:
         # 添加垂直線和數值顯示
         self.vertical_line = None
         self.value_texts = []
+        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
+
+        # 初始化繪圖相關的變數
+        self.vertical_lines = []  # 存儲每個子圖的垂直線
+        self.value_texts = []    # 存儲所有數值文字
+        self.profile_data = None # 存儲運動曲線數據
+        self.dt = None          # 存儲時間步長
+        
+        # 連接滑鼠事件
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
 
     def validate_inputs(self):
@@ -170,32 +187,50 @@ class ProfileGeneratorGUI:
 
     def on_mouse_move(self, event):
         """處理滑鼠移動事件，顯示垂直線和對應的y值"""
+        if not hasattr(self, 'profile_data') or not self.profile_data:
+            return
+            
         if event.inaxes:
-            # 移除舊的垂直線和文字
-            if self.vertical_line:
-                self.vertical_line.remove()
-            for text in self.value_texts:
-                text.remove()
-            self.value_texts.clear()
-            
-            # 繪製新的垂直線
-            self.vertical_line = self.fig.gca().axvline(x=event.xdata, color='gray', linestyle='--', alpha=0.5)
-            
-            # 獲取所有曲線在當前x位置的y值
-            x_idx = int(event.xdata / self.dt)  # 假設self.dt是時間步長
-            if x_idx < len(self.profile_data['time']):
-                names = ['位置', '速度', '加速度', '加加速度']
-                units = ['m', 'm/s', 'm/s²', 'm/s³']
+            # 清除舊的垂直線
+            while self.vertical_lines:
+                line = self.vertical_lines.pop()
+                line.remove() if line in line.axes.lines else None
                 
-                for i, ax in enumerate(self.axs):
-                    value = self.profile_data[list(self.profile_data.keys())[i+1]][x_idx]
-                    text = ax.text(0.02, 0.95, f'{names[i]}: {value:.3f} {units[i]}',
-                                 transform=ax.transAxes,
-                                 verticalalignment='top',
-                                 bbox=dict(facecolor='white', alpha=0.7))
-                    self.value_texts.append(text)
-            
-            self.canvas.draw_idle()
+            # 清除舊的文字
+            while self.value_texts:
+                text = self.value_texts.pop()
+                text.remove() if text in text.axes.texts else None
+                
+            try:
+                # 在每個子圖中添加垂直線
+                for ax in self.axs:
+                    line = ax.axvline(x=event.xdata, color='gray', linestyle='--', alpha=0.5)
+                    self.vertical_lines.append(line)
+                
+                # 獲取當前x位置的索引
+                x_idx = min(int(event.xdata / self.dt), len(self.profile_data['time']) - 1)
+                if x_idx >= 0:
+                    # 顯示每個曲線的值
+                    keys = ['position', 'velocity', 'acceleration', 'jerk']
+                    names = ['位置', '速度', '加速度', '加加速度']
+                    units = ['m', 'm/s', 'm/s²', 'm/s³']
+                    
+                    for i, (key, name, unit) in enumerate(zip(keys, names, units)):
+                        value = self.profile_data[key][x_idx]
+                        text = self.axs[i].text(
+                            0.02, 0.95, 
+                            f'{name}: {value:.3f} {unit}',
+                            transform=self.axs[i].transAxes,
+                            verticalalignment='top',
+                            bbox=dict(facecolor='white', alpha=0.7)
+                        )
+                        self.value_texts.append(text)
+                
+                # 重繪圖表
+                self.canvas.draw_idle()
+                
+            except Exception as e:
+                print(f"Error in on_mouse_move: {e}")
 
     def save_plot(self):
         file_path = filedialog.asksaveasfilename(
