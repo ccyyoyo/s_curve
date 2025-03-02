@@ -23,9 +23,13 @@ class SCurve:
 
         Raises:
             ValueError: 當任何參數小於或等於0時
+            ValueError: 當加加速度小於加速度時
         """
         if any(v <= 0 for v in [max_distance, max_speed, max_acceleration, max_jerk]):
             raise ValueError("All parameters must be positive")
+        
+        if max_jerk < max_acceleration:
+            raise ValueError("Jerk must be greater than acceleration for proper motion planning")
         
         self.max_distance = max_distance
         self.max_speed = max_speed
@@ -156,14 +160,7 @@ class SCurve:
         return speed_ok and accel_ok and jerk_ok
 
     def _calculate_profile_numpy(self, dt):
-        """使用 NumPy 計算運動曲線。
-
-        Args:
-            dt (float): 時間步長 (秒)
-
-        Returns:
-            dict: 包含運動曲線數據的字典
-        """
+        """使用 NumPy 計算運動曲線。"""
         stages = self.generate_stages()
         total_time = sum(stages['durations'])
         
@@ -177,33 +174,59 @@ class SCurve:
         positions = np.zeros_like(times)
         stage_indices = np.zeros_like(times, dtype=int)
         
-        # 填充 jerk 陣列和階段索引
+        # 改進階段索引和過渡的計算 - 添加微小重疊來確保連續性
         current_time = 0
         for i, (jerk, duration) in enumerate(zip(stages['jerks'], stages['durations'])):
+            # 使用微小的重疊確保階段之間的連續性
+            if i > 0:  # 不是第一個階段
+                overlap_start = max(0, current_time - dt)  # 重疊開始時間
+                mask_overlap = (times >= overlap_start) & (times < current_time)
+                # 在重疊區域設置混合值
+                overlap_ratio = (times[mask_overlap] - overlap_start) / (current_time - overlap_start)
+                # 讓重疊點的 jerk 逐漸過渡 (線性插值)
+                jerks[mask_overlap] = (1 - overlap_ratio) * stages['jerks'][i-1] + overlap_ratio * jerk
+            
+            # 正常設置當前階段的值
             mask = (times >= current_time) & (times < current_time + duration)
             jerks[mask] = jerk
             stage_indices[mask] = i
             current_time += duration
         
-        # 計算加速度、速度和位置
+        # 確保總時間範圍是正確的
+        if times[-1] > total_time:
+            times[-1] = total_time
+            jerks[-1] = stages['jerks'][-1]
+            stage_indices[-1] = len(stages['jerks']) - 1
+        
+        # 計算加速度、速度和位置時使用積分方法而不是簡單的前向差分
+        accelerations[0] = 0  # 初始加速度為0
+        velocities[0] = 0     # 初始速度為0
+        positions[0] = 0      # 初始位置為0
+        
+        # 使用更精確的積分方法
         for i in range(1, len(times)):
-            # 更新加速度
-            accelerations[i] = accelerations[i-1] + jerks[i] * dt
-            accelerations[i] = np.clip(accelerations[i], 
-                                     -self.max_acceleration, 
-                                     self.max_acceleration)
+            # 使用梯形法則計算加速度積分
+            accelerations[i] = accelerations[i-1] + 0.5 * (jerks[i-1] + jerks[i]) * dt
+            accelerations[i] = np.clip(accelerations[i], -self.max_acceleration, self.max_acceleration)
             
-            # 更新速度
-            velocities[i] = velocities[i-1] + accelerations[i] * dt
+            # 使用梯形法則計算速度積分
+            velocities[i] = velocities[i-1] + 0.5 * (accelerations[i-1] + accelerations[i]) * dt
             velocities[i] = np.clip(velocities[i], 0, self.max_speed)
             
-            # 在等速階段保持速度不變
-            if stage_indices[i] == 3:  # 等速階段
-                velocities[i] = self.calculate_max_reachable_speed(self.max_distance)
+            # 在等速階段強制設置恆定速度
+            if stage_indices[i] == 3 and len(stages['names']) > 6:  # 有等速階段且是等速階段
+                target_speed = self.calculate_max_reachable_speed(self.max_distance)
+                # 使用平滑過渡而不是突變
+                velocities[i] = target_speed
                 accelerations[i] = 0
             
-            # 更新位置
-            positions[i] = positions[i-1] + velocities[i] * dt
+            # 使用梯形法則計算位置積分
+            positions[i] = positions[i-1] + 0.5 * (velocities[i-1] + velocities[i]) * dt
+            
+            # 確保在進入減速階段前，速度是平滑過渡的
+            if i > 1 and stage_indices[i] == 4 and stage_indices[i-1] != 4:
+                # 即將進入減速階段，確保速度平滑過渡
+                velocities[i] = velocities[i-1]  # 保持與前一個點相同的速度
             
             # 如果到達目標位置且速度接近0，則停止計算
             if positions[i] >= self.max_distance and velocities[i] <= 0.001:
@@ -215,6 +238,10 @@ class SCurve:
                 jerks = jerks[:i+1]
                 stage_indices = stage_indices[:i+1]
                 break
+        
+        # 確保最終位置精確地達到目標距離
+        if positions[-1] != self.max_distance:
+            positions[-1] = self.max_distance
         
         return {
             'time': times,

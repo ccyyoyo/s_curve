@@ -1,10 +1,9 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
 from models.s_curve import SCurve
-from tkinter import messagebox
 from tkinter import filedialog
 
 class ProfileGeneratorGUI:
@@ -98,93 +97,169 @@ class ProfileGeneratorGUI:
             max_jerk = self.max_jerk.get()
             
             if any(v <= 0 for v in [distance, max_speed, max_acceleration, max_jerk]):
-                raise ValueError("All values must be positive")
+                messagebox.showerror("錯誤", "所有參數必須大於0")
+                return False
             
             return True
         except tk.TclError:
-            messagebox.showerror("Error", "Please enter valid numbers")
+            messagebox.showerror("錯誤", "請輸入有效的數值")
             return False
         except ValueError as e:
-            messagebox.showerror("Error", str(e))
+            messagebox.showerror("錯誤", str(e))
             return False
 
+    def _check_parameters(self, scurve):
+        """檢查參數是否合理"""
+        # 檢查加加速度是否小於加速度
+        if scurve.max_jerk < scurve.max_acceleration:
+            msg = f"加加速度 ({scurve.max_jerk:.2f}) 小於加速度 ({scurve.max_acceleration:.2f})！\n"
+            msg += "加加速度應該大於加速度才能產生合理的運動規劃。"
+            messagebox.showerror("參數錯誤", msg)
+            return False
+        
+        # 檢查加加速度是否足夠大
+        min_time_to_max_accel = scurve.max_acceleration / scurve.max_jerk
+        if min_time_to_max_accel > 1.0:
+            msg = f"加加速度值過小！需要 {min_time_to_max_accel:.2f} 秒才能達到最大加速度。\n"
+            msg += "建議增加加加速度值或減小最大加速度。"
+            messagebox.showwarning("參數警告", msg)
+            return False
+        
+        # 檢查最大速度是否合理
+        min_distance_for_max_speed = (scurve.max_speed ** 2) / scurve.max_acceleration
+        if min_distance_for_max_speed > scurve.max_distance:
+            msg = f"最大速度可能過高！\n"
+            msg += f"在給定的加速度下，需要至少 {min_distance_for_max_speed:.2f}m 才能達到最大速度。"
+            messagebox.showwarning("參數警告", msg)
+            
+        return True
+
     def generate_profile(self):
-        if not self.validate_inputs():
-            return
-
-        # Clear previous plots
-        for ax in self.axs:
-            ax.clear()
+        """生成運動曲線並顯示"""
+        try:
+            # 檢查輸入參數
+            if not self.validate_inputs():
+                return
             
-        # Generate profile
-        scurve = SCurve(
-            self.distance.get(),
-            self.max_speed.get(),
-            self.max_acceleration.get(),
-            self.max_jerk.get()
-        )
-        
-        profile = scurve.calculate_profile()
-        
-        # 定義每個階段的顏色
-        colors = ['red', 'blue', 'green', 'purple', 'orange', 'brown', 'pink']
-        
-        # 繪製每個階段
-        for i in range(len(profile['time'])-1):
-            stage = profile['stages'][i]
+            # 建立 S-Curve 物件
+            scurve = SCurve(
+                self.distance.get(),
+                self.max_speed.get(),
+                self.max_acceleration.get(),
+                self.max_jerk.get()
+            )
             
-            # Position plot
-            self.axs[0].plot(profile['time'][i:i+2], profile['position'][i:i+2], 
-                            color=colors[stage], linewidth=1)
-            self.axs[0].set_ylabel('Position (m)')
+            # 檢查參數是否合理
+            if not self._check_parameters(scurve):
+                return
             
-            # Velocity plot
-            self.axs[1].plot(profile['time'][i:i+2], profile['velocity'][i:i+2], 
-                            color=colors[stage], linewidth=1)
-            self.axs[1].set_ylabel('Velocity (m/s)')
+            # 計算運動曲線
+            profile = scurve.calculate_profile(dt=0.01)
             
-            # Acceleration plot
-            self.axs[2].plot(profile['time'][i:i+2], profile['acceleration'][i:i+2], 
-                            color=colors[stage], linewidth=1)
-            self.axs[2].set_ylabel('Acceleration (m/s²)')
+            # 清除先前的圖表
+            for ax in self.axs:
+                ax.clear()
             
-            # Jerk plot
-            self.axs[3].plot(profile['time'][i:i+2], profile['jerk'][i:i+2], 
-                            color=colors[stage], linewidth=1)
-            self.axs[3].set_ylabel('Jerk (m/s³)')
-        
-        # 設置標題和標籤（使用中文）
-        titles = ['位置曲線', '速度曲線', '加速度曲線', '加加速度曲線']
-        ylabels = ['位置 (m)', '速度 (m/s)', '加速度 (m/s²)', '加加速度 (m/s³)']
-        
-        for ax, title, ylabel in zip(self.axs, titles, ylabels):
-            ax.grid(True, linestyle='--', alpha=0.7)
-            ax.set_title(title, fontsize=10)
-            ax.set_ylabel(ylabel, fontsize=9)
-        
-        self.axs[3].set_xlabel('時間 (s)', fontsize=9)
-        
-        # 添加圖例（使用中文）
-        stage_names = ['加加速', '加速', '減加加速', '等速', '減加加速', '減速', '加加加速']
-        legend_elements = [plt.Line2D([0], [0], color=colors[i], label=stage_names[i]) 
-                          for i in range(len(colors))]
-        self.axs[0].legend(handles=legend_elements, loc='upper right')
-        
-        # 設定每個子圖的標題和網格
-        titles = ['Position Profile', 'Velocity Profile', 
-                 'Acceleration Profile', 'Jerk Profile']
-        
-        for ax, title in zip(self.axs, titles):
-            ax.grid(True, linestyle='--', alpha=0.7)
-            ax.set_title(title)
-        
-        # 保存profile數據供後續使用
-        self.profile_data = profile
-        self.dt = profile['time'][1] - profile['time'][0]  # 保存時間步長
-        
-        # Update canvas
-        self.canvas.draw()
-
+            # 首先繪製整體曲線
+            self.axs[0].plot(profile['time'], profile['position'], 'k-', linewidth=0.5, alpha=0.3)
+            self.axs[1].plot(profile['time'], profile['velocity'], 'k-', linewidth=0.5, alpha=0.3)
+            self.axs[2].plot(profile['time'], profile['acceleration'], 'k-', linewidth=0.5, alpha=0.3)
+            self.axs[3].plot(profile['time'], profile['jerk'], 'k-', linewidth=0.5, alpha=0.3)
+            
+            # 定義每個階段的顏色
+            colors = ['red', 'blue', 'green', 'purple', 'orange', 'brown', 'pink']
+            
+            # 針對每個階段的數據查找階段變化點
+            stage_changes = [0]  # 第一個點總是階段的開始
+            stages = profile['stages']
+            
+            for i in range(1, len(stages)):
+                if stages[i] != stages[i-1]:
+                    stage_changes.append(i)
+            stage_changes.append(len(stages) - 1)  # 最後一個點
+            
+            # 繪製每個階段的不同顏色
+            for i in range(len(stage_changes) - 1):
+                start_idx = stage_changes[i]
+                end_idx = stage_changes[i + 1]
+                stage = stages[start_idx]
+                
+                # 確保有足夠的數據點來繪製
+                if end_idx - start_idx > 1:
+                    self.axs[0].plot(profile['time'][start_idx:end_idx+1], 
+                                    profile['position'][start_idx:end_idx+1], 
+                                    color=colors[stage % len(colors)], linewidth=1.5)
+                    
+                    self.axs[1].plot(profile['time'][start_idx:end_idx+1], 
+                                    profile['velocity'][start_idx:end_idx+1], 
+                                    color=colors[stage % len(colors)], linewidth=1.5)
+                    
+                    self.axs[2].plot(profile['time'][start_idx:end_idx+1], 
+                                    profile['acceleration'][start_idx:end_idx+1], 
+                                    color=colors[stage % len(colors)], linewidth=1.5)
+                    
+                    self.axs[3].plot(profile['time'][start_idx:end_idx+1], 
+                                    profile['jerk'][start_idx:end_idx+1], 
+                                    color=colors[stage % len(colors)], linewidth=1.5)
+            
+            # 檢查階段之間的連續性
+            for i in range(1, len(stage_changes)):
+                idx = stage_changes[i]
+                if idx > 0 and idx < len(profile['velocity']) - 1:
+                    # 新增階段變換點標記
+                    for j, ax in enumerate(self.axs):
+                        keys = ['position', 'velocity', 'acceleration', 'jerk']
+                        ax.plot(profile['time'][idx], profile[keys[j]][idx], 'ko', markersize=3)
+            
+            # 設置標題和標籤
+            titles = ['位置曲線', '速度曲線', '加速度曲線', '加加速度曲線']
+            ylabels = ['位置 (m)', '速度 (m/s)', '加速度 (m/s²)', '加加速度 (m/s³)']
+            
+            for ax, title, ylabel in zip(self.axs, titles, ylabels):
+                ax.grid(True, linestyle='--', alpha=0.7)
+                ax.set_title(title, fontsize=10)
+                ax.set_ylabel(ylabel, fontsize=9)
+            
+            self.axs[3].set_xlabel('時間 (s)', fontsize=9)
+            
+            # 添加圖例
+            stage_names = ['加加速', '加速', '減加加速', '等速', '減加加速', '減速', '加加加速']
+            legend_elements = []
+            for i, name in enumerate(stage_names):
+                if i < len(colors):
+                    legend_elements.append(plt.Line2D([0], [0], color=colors[i], label=name))
+            
+            self.axs[0].legend(handles=legend_elements, loc='upper right')
+            
+            # 保存profile數據供後續使用
+            self.profile_data = profile
+            self.dt = profile['time'][1] - profile['time'][0]  # 保存時間步長
+            
+            # 在速度曲線上添加階段變化點的標註
+            for i in range(1, len(stage_changes)):
+                idx = stage_changes[i]
+                if idx > 0 and idx < len(profile['velocity']):
+                    t = profile['time'][idx]
+                    v = profile['velocity'][idx]
+                    self.axs[1].annotate(f'S{stages[idx]}', xy=(t, v), 
+                                        xytext=(0, 10), textcoords='offset points',
+                                        fontsize=8, ha='center',
+                                        arrowprops=dict(arrowstyle='->', lw=0.5))
+            
+            # Update canvas
+            self.fig.tight_layout()
+            self.canvas.draw()
+            
+            # 顯示成功訊息
+            messagebox.showinfo("成功", "運動曲線已生成！")
+            
+        except ValueError as e:
+            messagebox.showerror("錯誤", str(e))
+        except Exception as e:
+            import traceback
+            traceback.print_exc()  # 在控制台打印詳細錯誤信息
+            messagebox.showerror("錯誤", f"生成運動曲線時發生錯誤：{str(e)}")
+            
     def on_mouse_move(self, event):
         """處理滑鼠移動事件，顯示垂直線和對應的y值"""
         if not hasattr(self, 'profile_data') or not self.profile_data:
@@ -233,13 +308,21 @@ class ProfileGeneratorGUI:
                 print(f"Error in on_mouse_move: {e}")
 
     def save_plot(self):
+        if not hasattr(self, 'profile_data') or self.profile_data is None:
+            messagebox.showerror("錯誤", "請先生成運動曲線！")
+            return
+            
         file_path = filedialog.asksaveasfilename(
             defaultextension=".png",
             filetypes=[("PNG files", "*.png"), 
                       ("All files", "*.*")]
         )
         if file_path:
-            self.fig.savefig(file_path, dpi=300, bbox_inches='tight')
+            try:
+                self.fig.savefig(file_path, dpi=300, bbox_inches='tight')
+                messagebox.showinfo("成功", f"圖表已儲存至\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("錯誤", f"儲存圖表時發生錯誤：{str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
